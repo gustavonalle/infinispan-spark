@@ -1,0 +1,54 @@
+Index: src/test/scala/org/infinispan/spark/suites/ClusteredCompatSuite.scala
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/test/scala/org/infinispan/spark/suites/ClusteredCompatSuite.scala	(revision )
++++ src/test/scala/org/infinispan/spark/suites/ClusteredCompatSuite.scala	(revision )
+@@ -0,0 +1,16 @@
++package org.infinispan.spark.suites
++
++import org.jboss.dmr.scala.ModelNode
++import org.scalatest.DoNotDiscover
++
++@DoNotDiscover
++class ClusteredCompatSuite extends DistributedSuite {
++
++   override def getCacheConfig = Some(ModelNode(
++      "compatibility" -> ModelNode(
++         "COMPATIBILITY" -> ModelNode(
++            "enabled" -> true
++         )
++      )
++   ))
++}
+Index: project/Versions.scala
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- project/Versions.scala	(date 1461337632000)
++++ project/Versions.scala	(revision )
+@@ -1,5 +1,5 @@
+ object Versions {
+-   val infinispanVersion = "9.0.0.Alpha1"
++   val infinispanVersion = "9.0.0-SNAPSHOT"
+    val protoStreamVersion = "3.0.5.Final"
+    val sparkVersion = "1.6.0"
+    val scalaTestVersion = "2.2.5"
+Index: src/test/scala/org/infinispan/spark/ClusteredSuites.scala
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- src/test/scala/org/infinispan/spark/ClusteredSuites.scala	(date 1461337632000)
++++ src/test/scala/org/infinispan/spark/ClusteredSuites.scala	(revision )
+@@ -9,7 +9,7 @@
+ /**
+  * Aggregates all suites that requires a running cluster.
+  */
+-class ClusteredSuites extends Suites(new DistributedSuite, new ReplicatedSuite, new SQLSuite, new StreamingSuite,
++class ClusteredSuites extends Suites(new DistributedSuite, new ClusteredCompatSuite, new ReplicatedSuite, new SQLSuite, new StreamingSuite,
+    new FilterByQueryProtoAnnotationSuite, new CustomFilterRDDSuite, new FilterByQueryProtoSuite) with BeforeAndAfterAll {
+ 
+    override protected def beforeAll(): Unit = {
