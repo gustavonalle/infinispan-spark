@@ -3,10 +3,10 @@ package org.infinispan.spark.examples.twitter
 import java.util.Properties
 
 import org.apache.log4j.{Level, Logger}
+import org.apache.spark.SparkContext
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.twitter.TwitterUtils
 import org.apache.spark.streaming.{Seconds, StreamingContext}
-import org.apache.spark.{SparkConf, SparkContext}
 import org.infinispan.spark.examples.twitter.Sample.getSparkConf
 import org.infinispan.spark.stream._
 
