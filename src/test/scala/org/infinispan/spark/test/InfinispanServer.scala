@@ -1,7 +1,6 @@
 package org.infinispan.spark.test
 
 import java.io.File
-import java.lang.management.ManagementFactory
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.{Files, Paths}
 
@@ -70,7 +69,7 @@ private[test] class Cluster(size: Int, location: String) {
 
    def addEntities(entities: EntityDef): Unit = this.entities = Some(entities)
 
-   def startServers(servers: Seq[InfinispanServer], timeOut: Duration): Boolean = {
+   private def startServers(servers: Seq[InfinispanServer], timeOut: Duration): Unit = {
       import scala.concurrent.blocking
       val futureServers = servers.map { s =>
          entities.foreach(s.addEntities)
@@ -82,23 +81,31 @@ private[test] class Cluster(size: Int, location: String) {
       }
       val outcome = Future.sequence(futureServers)
       Await.ready(outcome, timeOut)
-      val running = outcome.value match {
+      outcome.value match {
          case Some(Failure(e)) => throw new RuntimeException(e)
-         case _ => true
+         case _ =>
       }
-      running
+   }
+
+   private def startSequential(servers: Seq[InfinispanServer], timeOut: Duration): Unit = {
+      Await.result(Future {
+         servers.foreach { s =>
+            entities.foreach(s.addEntities)
+            s.startAndWaitForCacheManager(ServerConfig, "clustered")
+         }
+         servers.foreach(_.waitForNumberOfMembers( _servers.size + servers.size, timeOut))
+      }, timeOut)
    }
 
    def isStarted = started
 
-   def startAndWait(duration: Duration) = {
+   def startAndWait(duration: Duration, parallel: Boolean = true) = {
       val servers = for (i <- 0 until size) yield {
          new InfinispanServer(location, s"server$i", clustered = true, i * 1000)
       }
-      if (startServers(servers, duration)) {
-         _servers ++= servers
-         started = true
-      }
+      if (parallel) startServers(servers, duration) else startSequential(servers, duration)
+      _servers ++= servers
+      started = true
    }
 
    def shutDown() = if (started) {
@@ -113,7 +120,8 @@ private[test] class Cluster(size: Int, location: String) {
       _failed_servers += failedServer
    }
 
-   def restoreFailed(timeOut: Duration) = if (startServers(_failed_servers, timeOut)) {
+   def restoreFailed(timeOut: Duration) = {
+      startSequential(_failed_servers, timeOut)
       _servers ++= _failed_servers
       _failed_servers.clear()
    }
@@ -144,7 +152,6 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
    val LogDirConfig = "-Djboss.server.log.dir"
    val PortOffsetConfig = "-Djboss.socket.binding.port-offset"
    val StackConfig = "-Djboss.default.jgroups.stack=tcp"
-   val TimeoutConfig = "-Djgroups.join_timeout=1000"
    val PreferIpv4Config = "-Djava.net.preferIPv4Stack=true"
    val DataDir = "-Djboss.server.data.dir"
    val InfinispanSubsystem = "datagrid-infinispan"
@@ -179,30 +186,33 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
       override def run(): Unit = Try(shutDown())
    })
 
-   def copyConfig(config: String): String = {
+   def copyConfig(config: String): File = {
       val newConfig = s"$config-$name"
       val sourcePath = Paths.get(serverHome, DefaultConfigFolder, config)
       val destinationPath = Paths.get(serverHome, DefaultConfigFolder, newConfig)
       if (!destinationPath.toFile.exists) Files.copy(sourcePath, destinationPath, REPLACE_EXISTING)
-      newConfig
+      destinationPath.toFile
    }
 
    def start(config: String) = {
-      val args = ManagementFactory.getRuntimeMXBean.getInputArguments
-      val isDebug = args.contains("-Dserver-debug")
+      val isDebug = Option(System.getProperty("serverDebug"))
+      val infinispanTrace = Option(System.getProperty("enableTrace"))
       val logDir = Paths.get(serverHome, "logs")
       val dataDir = Paths.get(serverHome, "state")
       val launch = Paths.get(serverHome, BinFolder, LaunchScript)
       new File(launch.toString).setExecutable(true)
       val cmd = mutable.ListBuffer[String](Paths.get(serverHome, BinFolder, LaunchScript).toString)
-      if (isDebug) {
+      if (isDebug.isDefined) {
          cmd += s"--debug"
          cmd += s"${baseDebugPort + portOffSet}"
       }
-      cmd += s"-c=${copyConfig(config)}"
+      val serverConfig = copyConfig(config)
+      cmd += s"-c=${serverConfig.getName}"
+      if (infinispanTrace.isDefined) {
+         setTrace(serverConfig, "org.infinispan")
+      }
       if (clustered) {
          cmd += StackConfig
-         cmd += TimeoutConfig
          cmd += PreferIpv4Config
       }
       cmd += s"$NameNodeConfig=$name"
@@ -335,6 +345,30 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
          .addClasses(filterDef.allClasses: _*)
          .setManifest(new StringAsset(s"Dependencies: ${filterDef.moduleDeps.mkString(",")}"))
          .addAsServiceProvider(classOf[KeyValueFilterConverterFactory[_, _, _]], filterDef.factoryClass))
+   }
+
+   def setTrace(configFile: File, category: String): Unit = {
+      val xmlFile = XML.loadFile(configFile)
+      val toAdd =
+         <logger category={category}>
+            <level name="TRACE"/>
+         </logger>
+
+      val elementFilter: Node => Boolean = n => n.namespace == "urn:jboss:domain:logging:3.0" && n.label == "subsystem"
+      val newXML = addChildToNode(xmlFile, elementFilter, toAdd)
+      XML.save(configFile.getAbsolutePath, newXML, "UTF-8")
+   }
+
+   def addChildToNode(element: Node, filter: Node => Boolean, elementToAdd: Node) = {
+      object Rule extends RewriteRule {
+         override def transform(n: Node): Seq[Node] = n match {
+            case e@Elem(prefix, en, att, scope, child@_*) if filter.apply(e) =>
+               Elem(prefix, en, att, scope, child.isEmpty, elementToAdd ++ child: _*)
+            case other => other
+         }
+      }
+      object Transform extends RuleTransformer(Rule)
+      Transform(element)
    }
 
    def addEntities(entities: EntityDef): Unit = {
@@ -500,7 +534,7 @@ object Cluster {
 
    def start() = if (!cluster.isStarted) {
       cluster.addEntities(TestEntities)
-      cluster.startAndWait(StartTimeout)
+      cluster.startAndWait(StartTimeout, parallel = false)
    }
 
    def addFilter[K, V, C](f: FilterDef) = cluster.addFilter(f)
