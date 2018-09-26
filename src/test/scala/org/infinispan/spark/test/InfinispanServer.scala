@@ -186,12 +186,12 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
       override def run(): Unit = Try(shutDown())
    })
 
-   def copyConfig(config: String): File = {
+   def copyConfig(config: String): String = {
       val newConfig = s"$config-$name"
       val sourcePath = Paths.get(serverHome, DefaultConfigFolder, config)
       val destinationPath = Paths.get(serverHome, DefaultConfigFolder, newConfig)
       if (!destinationPath.toFile.exists) Files.copy(sourcePath, destinationPath, REPLACE_EXISTING)
-      destinationPath.toFile
+      newConfig
    }
 
    def start(config: String) = {
@@ -207,10 +207,8 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
          cmd += s"${baseDebugPort + portOffSet}"
       }
       val serverConfig = copyConfig(config)
-      cmd += s"-c=${serverConfig.getName}"
-      if (infinispanTrace.isDefined) {
-         setTrace(serverConfig, "org.infinispan")
-      }
+      cmd += s"-c=$serverConfig"
+      setTrace(serverConfig, infinispanTrace)
       if (clustered) {
          cmd += StackConfig
          cmd += PreferIpv4Config
@@ -225,7 +223,9 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
       launcher = Process(cmd).run(new ProcessLogger {
          override def out(s: => String): Unit = {}
 
-         override def err(s: => String): Unit = {}
+         override def err(s: => String): Unit = {
+            println(s)
+         }
 
          override def buffer[T](f: => T): T = f
       })
@@ -253,6 +253,7 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
       }
       client.close()
       launcher.exitValue()
+      launcher.destroy()
       started = false
    }
 
@@ -347,16 +348,23 @@ private[test] class InfinispanServer(location: String, name: String, clustered: 
          .addAsServiceProvider(classOf[KeyValueFilterConverterFactory[_, _, _]], filterDef.factoryClass))
    }
 
-   def setTrace(configFile: File, category: String): Unit = {
-      val xmlFile = XML.loadFile(configFile)
-      val toAdd =
+
+   def setTrace(configFile: String, categories: Option[String]): Unit = {
+      def asLogger(category: String) =
          <logger category={category}>
             <level name="TRACE"/>
          </logger>
 
-      val elementFilter: Node => Boolean = n => n.namespace == "urn:jboss:domain:logging:3.0" && n.label == "subsystem"
-      val newXML = addChildToNode(xmlFile, elementFilter, toAdd)
-      XML.save(configFile.getAbsolutePath, newXML, "UTF-8")
+      lazy val path = Paths.get(serverHome, DefaultConfigFolder, configFile)
+      lazy val xmlFile = XML.loadFile(path.toFile)
+      lazy val elementFilter: Node => Boolean = n => n.namespace == "urn:jboss:domain:logging:3.0" && n.label == "subsystem"
+      categories.foreach(c => {
+         c.split(",").map(asLogger).foreach(logger => {
+            val xmlFile = XML.loadFile(path.toFile)
+            val newXML = addChildToNode(xmlFile, elementFilter, logger)
+            XML.save(path.toFile.getAbsolutePath, newXML, "UTF-8")
+         })
+      })
    }
 
    def addChildToNode(element: Node, filter: Node => Boolean, elementToAdd: Node) = {
@@ -534,7 +542,7 @@ object Cluster {
 
    def start() = if (!cluster.isStarted) {
       cluster.addEntities(TestEntities)
-      cluster.startAndWait(StartTimeout, parallel = false)
+      cluster.startAndWait(StartTimeout)
    }
 
    def addFilter[K, V, C](f: FilterDef) = cluster.addFilter(f)
